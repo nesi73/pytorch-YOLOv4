@@ -1,0 +1,1 @@
+python train.py -l 0.001 -g 4 -pretrained ./yolov4.conv.137.pth -classes 1 -dir home/nesi/Desktop/pytorch-YOLOv4/train

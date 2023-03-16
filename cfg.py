@@ -18,13 +18,13 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 Cfg = EasyDict()
 
-Cfg.use_darknet_cfg = True
+Cfg.use_darknet_cfg = False
 Cfg.cfgfile = os.path.join(_BASE_DIR, 'cfg', 'yolov4.cfg')
 
 Cfg.batch = 64
 Cfg.subdivisions = 16
-Cfg.width = 608
-Cfg.height = 608
+Cfg.width = 448
+Cfg.height = 448
 Cfg.channels = 3
 Cfg.momentum = 0.949
 Cfg.decay = 0.0005
