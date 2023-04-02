@@ -3,7 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 from tool.torch_utils import *
 from tool.yolo_layer import YoloLayer
-
+import copy
 
 class Mish(torch.nn.Module):
     def __init__(self):
@@ -470,6 +470,15 @@ if __name__ == "__main__":
     else:
         print('Usage: ')
         print('  python models.py num_classes weightfile imgfile namefile')
+        n_classes = 2
+        weightfile = "./checkpoints/Yolov4_epoch71.pth"
+        # imgfile = "./dataset/crack_detection_dataset/train/Volker_DSC01710_725_197_1392_1586.jpg"
+        # imgfile = "./dataset/crack_detection_dataset/train/Volker_DSC01709_71_801_1387_1771.jpg"
+        # imgfile = "./dataset/crack_detection_dataset/evaluation/Volker_DSC01710_15_28_1388_1132.jpg"
+        imgfile = "./dataset/crack_detection_dataset/evaluation/Volker_DSC01710_15_28_1388_1132.jpg"
+        height = 448
+        width = 448
+        namesfile = "./data/crack.names"
 
     model = Yolov4(yolov4conv137weight=None, n_classes=n_classes, inference=True)
 
@@ -480,30 +489,37 @@ if __name__ == "__main__":
     if use_cuda:
         model.cuda()
 
-    img = cv2.imread(imgfile)
+    for imgfile in os.listdir("./dataset/crack_detection_dataset/evaluation/"):
+        name_img = copy.deepcopy(imgfile)
+        if not imgfile.endswith('.jpg'):
+            continue
 
-    # Inference input size is 416*416 does not mean training size is the same
-    # Training size could be 608*608 or even other sizes
-    # Optional inference sizes:
-    #   Hight in {320, 416, 512, 608, ... 320 + 96 * n}
-    #   Width in {320, 416, 512, 608, ... 320 + 96 * m}
-    sized = cv2.resize(img, (width, height))
-    sized = cv2.cvtColor(sized, cv2.COLOR_BGR2RGB)
+        imgfile = os.path.join("./dataset/crack_detection_dataset/evaluation/", imgfile)
 
-    from tool.utils import load_class_names, plot_boxes_cv2
-    from tool.torch_utils import do_detect
+        img = cv2.imread(imgfile)
 
-    for i in range(2):  # This 'for' loop is for speed check
-                        # Because the first iteration is usually longer
-        boxes = do_detect(model, sized, 0.4, 0.6, use_cuda)
+        # Inference input size is 416*416 does not mean training size is the same
+        # Training size could be 608*608 or even other sizes
+        # Optional inference sizes:
+        #   Hight in {320, 416, 512, 608, ... 320 + 96 * n}
+        #   Width in {320, 416, 512, 608, ... 320 + 96 * m}
+        sized = cv2.resize(img, (width, height))
+        sized = cv2.cvtColor(sized, cv2.COLOR_BGR2RGB)
 
-    if namesfile == None:
-        if n_classes == 20:
-            namesfile = 'data/voc.names'
-        elif n_classes == 80:
-            namesfile = 'data/coco.names'
-        else:
-            print("please give namefile")
+        from tool.utils import load_class_names, plot_boxes_cv2
+        from tool.torch_utils import do_detect
 
-    class_names = load_class_names(namesfile)
-    plot_boxes_cv2(img, boxes[0], 'predictions.jpg', class_names)
+        for i in range(2):  # This 'for' loop is for speed check
+                            # Because the first iteration is usually longer
+            boxes = do_detect(model, sized, 0.1, 0.0, use_cuda)
+
+        if namesfile == None:
+            if n_classes == 20:
+                namesfile = 'data/voc.names'
+            elif n_classes == 80:
+                namesfile = 'data/coco.names'
+            else:
+                print("please give namefile")
+
+        class_names = load_class_names(namesfile)
+        plot_boxes_cv2(img, boxes[0], 'results/{}'.format(name_img), class_names)

@@ -25,7 +25,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch import optim
 from torch.nn import functional as F
-from tensorboardX import SummaryWriter
 from easydict import EasyDict as edict
 
 from dataset import Yolo_dataset
@@ -36,6 +35,7 @@ from tool.darknet2pytorch import Darknet
 from tool.tv_reference.utils import collate_fn as val_collate
 from tool.tv_reference.coco_utils import convert_to_coco_api
 from tool.tv_reference.coco_eval import CocoEvaluator
+from tensorboardX import SummaryWriter
 
 
 def bboxes_iou(bboxes_a, bboxes_b, xyxy=True, GIoU=False, DIoU=False, CIoU=False):
@@ -208,7 +208,10 @@ class Yolo_loss(nn.Module):
             truth_box[:n, 0] = truth_x_all[b, :n]
             truth_box[:n, 1] = truth_y_all[b, :n]
 
-            pred_ious = bboxes_iou(pred[b].view(-1, 4), truth_box, xyxy=False)
+            # ISSUE 553
+            # https://github.com/Tianxiaomo/pytorch-YOLOv4/issues/553
+
+            pred_ious = bboxes_iou(pred[b].contiguous().view(-1, 4), truth_box, xyxy=False)
             pred_best_iou, _ = pred_ious.max(dim=1)
             pred_best_iou = (pred_best_iou > self.ignore_thre)
             pred_best_iou = pred_best_iou.view(pred[b].shape[:3])
@@ -296,9 +299,9 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
     n_val = len(val_dataset)
 
     train_loader = DataLoader(train_dataset, batch_size=config.batch // config.subdivisions, shuffle=True,
-                              num_workers=0, pin_memory=True, drop_last=True, collate_fn=collate)
+                              num_workers=4, pin_memory=True, drop_last=True, collate_fn=collate)
 
-    val_loader = DataLoader(val_dataset, batch_size=config.batch // config.subdivisions, shuffle=True, num_workers=8,
+    val_loader = DataLoader(val_dataset, batch_size=config.batch // config.subdivisions, shuffle=True, num_workers=0,
                             pin_memory=True, drop_last=True, collate_fn=val_collate)
 
     writer = SummaryWriter(log_dir=config.TRAIN_TENSORBOARD_DIR,
@@ -376,9 +379,11 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
                 images = images.to(device=device, dtype=torch.float32)
                 bboxes = bboxes.to(device=device)
 
+                time_model=time.time()
                 bboxes_pred = model(images)
                 loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = criterion(bboxes_pred, bboxes)
                 # loss = loss / config.subdivisions
+                time_loss=time.time()
                 loss.backward()
 
                 epoch_loss += loss.item()
@@ -412,32 +417,33 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
 
                 pbar.update(images.shape[0])
 
-            if cfg.use_darknet_cfg:
-                eval_model = Darknet(cfg.cfgfile, inference=True)
-            else:
-                eval_model = Yolov4(cfg.pretrained, n_classes=cfg.classes, inference=True)
-            # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
-            if torch.cuda.device_count() > 1:
-                eval_model.load_state_dict(model.module.state_dict())
-            else:
-                eval_model.load_state_dict(model.state_dict())
-            eval_model.to(device)
-            evaluator = evaluate(eval_model, val_loader, config, device)
-            del eval_model
+            if False:
+                if cfg.use_darknet_cfg:
+                    eval_model = Darknet(cfg.cfgfile, inference=True)
+                else:
+                    eval_model = Yolov4(cfg.pretrained, n_classes=cfg.classes, inference=True)
+                # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
+                if torch.cuda.device_count() > 1:
+                    eval_model.load_state_dict(model.module.state_dict())
+                else:
+                    eval_model.load_state_dict(model.state_dict())
+                eval_model.to(device)
+                evaluator = evaluate(eval_model, val_loader, config, device)
+                del eval_model
 
-            stats = evaluator.coco_eval['bbox'].stats
-            writer.add_scalar('train/AP', stats[0], global_step)
-            writer.add_scalar('train/AP50', stats[1], global_step)
-            writer.add_scalar('train/AP75', stats[2], global_step)
-            writer.add_scalar('train/AP_small', stats[3], global_step)
-            writer.add_scalar('train/AP_medium', stats[4], global_step)
-            writer.add_scalar('train/AP_large', stats[5], global_step)
-            writer.add_scalar('train/AR1', stats[6], global_step)
-            writer.add_scalar('train/AR10', stats[7], global_step)
-            writer.add_scalar('train/AR100', stats[8], global_step)
-            writer.add_scalar('train/AR_small', stats[9], global_step)
-            writer.add_scalar('train/AR_medium', stats[10], global_step)
-            writer.add_scalar('train/AR_large', stats[11], global_step)
+                stats = evaluator.coco_eval['bbox'].stats
+                writer.add_scalar('train/AP', stats[0], global_step)
+                writer.add_scalar('train/AP50', stats[1], global_step)
+                writer.add_scalar('train/AP75', stats[2], global_step)
+                writer.add_scalar('train/AP_small', stats[3], global_step)
+                writer.add_scalar('train/AP_medium', stats[4], global_step)
+                writer.add_scalar('train/AP_large', stats[5], global_step)
+                writer.add_scalar('train/AR1', stats[6], global_step)
+                writer.add_scalar('train/AR10', stats[7], global_step)
+                writer.add_scalar('train/AR100', stats[8], global_step)
+                writer.add_scalar('train/AR_small', stats[9], global_step)
+                writer.add_scalar('train/AR_medium', stats[10], global_step)
+                writer.add_scalar('train/AR_large', stats[11], global_step)
 
             if save_cp:
                 try:

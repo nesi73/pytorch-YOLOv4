@@ -2,8 +2,9 @@ import os
 import numpy as np
 import cv2
 
-path_train = './dataset'
-output_path = './new_train'
+division='evaluation' #evaluation or train
+path_train = './dataset/crack_detection_dataset/{}'.format(division)
+output_path = './icuas/{}'.format(division)
 
 train_dir = os.listdir(path_train)
 
@@ -51,17 +52,19 @@ for sample in train_dir:
                 label[idx*5 + 5] = '0' #category
         
         label[0] = '{}/{}.jpg'.format(output_path, sample.split('.')[0])
-        cv2.imwrite('prueba.jpg', img)
+        # cv2.imwrite('prueba.jpg', img)
     
         labels_train.append(label)
     
-    # else:
-    #     img=cv2.imread(os.path.join(path_train, sample))
-    #     sample=sample.split('.')[0] + '.jpg'
-    #     cv2.imwrite(os.path.join(output_path, sample), img)
+    else:
+        if sample.split('_')[0] == 'noncrack':
+            a=0
+        img=cv2.imread(os.path.join(path_train, sample))
+        sample=sample.split('.')[0] + '.jpg'
+        cv2.imwrite(os.path.join(output_path, sample), img)
 
 
-with open('train.txt', 'w') as f:
+with open('{}.txt'.format(division), 'w') as f:
     for line in labels_train:
         line_str=''
         for i, l in enumerate(line):
