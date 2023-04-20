@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from tool.torch_utils import *
 from tool.yolo_layer import YoloLayer
 import copy
+import cv2
+import os
 
 class Mish(torch.nn.Module):
     def __init__(self):
@@ -447,11 +449,55 @@ class Yolov4(nn.Module):
 
         output = self.head(x20, x13, x6)
         return output
+    
+def get_model_init():
+    from tool.utils import load_class_names
+    n_classes = 2
+    weightfile = "./checkpoints/Yolov4_epoch300.pth"
+    namesfile = "./data/crack.names"
+    model = Yolov4(yolov4conv137weight=None, n_classes=n_classes, inference=True)
 
+    pretrained_dict = torch.load(weightfile, map_location=torch.device('cuda'))
+    model.load_state_dict(pretrained_dict)
+    ('model loaded')
+    
+    class_names = load_class_names(namesfile)
+
+    return model, class_names
+
+def predict(model, class_names, img):
+    width = 448
+    height = 448
+
+    use_cuda = True
+    if use_cuda:
+        model.cuda()
+        sized = cv2.resize(img, (width, height))
+
+        from tool.utils import load_class_names, plot_boxes_cv2
+        from tool.torch_utils import do_detect
+
+        for i in range(2):  # This 'for' loop is for speed check
+                            # Because the first iteration is usually longer
+            boxes = do_detect(model, sized, 0.1, 0.0, use_cuda)
+
+        img,total_detections=plot_boxes_cv2(img, boxes[0], 'results/{}'.format('xd'), class_names)
+
+        return img, total_detections
+
+import argparse
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--path', type=str, help='relative path to evaluation dataset')
+    parser.add_argument('--output_path', type=str, help='relative path to result txt')
+
+    return parser.parse_args()
 
 if __name__ == "__main__":
     import sys
     import cv2
+
+    opt = get_args()
 
     namesfile = None
     if len(sys.argv) == 6:
@@ -471,7 +517,7 @@ if __name__ == "__main__":
         print('Usage: ')
         print('  python models.py num_classes weightfile imgfile namefile')
         n_classes = 2
-        weightfile = "./checkpoints/Yolov4_epoch71.pth"
+        weightfile = "./checkpoints/Yolov4_epoch298.pth"
         # imgfile = "./dataset/crack_detection_dataset/train/Volker_DSC01710_725_197_1392_1586.jpg"
         # imgfile = "./dataset/crack_detection_dataset/train/Volker_DSC01709_71_801_1387_1771.jpg"
         # imgfile = "./dataset/crack_detection_dataset/evaluation/Volker_DSC01710_15_28_1388_1132.jpg"
@@ -481,20 +527,23 @@ if __name__ == "__main__":
         namesfile = "./data/crack.names"
 
     model = Yolov4(yolov4conv137weight=None, n_classes=n_classes, inference=True)
-
     pretrained_dict = torch.load(weightfile, map_location=torch.device('cuda'))
+
+    print('pretrained_dict')
     model.load_state_dict(pretrained_dict)
 
     use_cuda = True
     if use_cuda:
         model.cuda()
 
-    for imgfile in os.listdir("./dataset/crack_detection_dataset/evaluation/"):
+    results_json=[]
+
+    for imgfile in os.listdir(opt.path):
         name_img = copy.deepcopy(imgfile)
         if not imgfile.endswith('.jpg'):
             continue
 
-        imgfile = os.path.join("./dataset/crack_detection_dataset/evaluation/", imgfile)
+        imgfile = os.path.join(opt.path, imgfile)
 
         img = cv2.imread(imgfile)
 
@@ -521,5 +570,20 @@ if __name__ == "__main__":
             else:
                 print("please give namefile")
 
-        class_names = load_class_names(namesfile)
-        plot_boxes_cv2(img, boxes[0], 'results/{}'.format(name_img), class_names)
+        # class_names = load_class_names(namesfile)
+        # plot_boxes_cv2(img, boxes[0], 'results/{}'.format(name_img), class_names)
+
+        for detection in boxes[0]:
+            bbox_ = detection[:4]
+            bbox = [float(x) * width for x in bbox_]
+            cls_conf = detection[5]
+            cls_id = detection[6]
+            if cls_conf > 0.1 and cls_id == 0:
+                results_json.append([imgfile.split('/')[-1], bbox])
+
+  #write in txt file
+    with open(opt.output_path, 'w') as outfile:
+        for line in results_json:
+            string_line=line[0] + " " + str(line[1][0]) + " " + str(line[1][1]) + " " + str(line[1][2]) + " " + str(line[1][3]) + '\n'
+
+            outfile.write(string_line)
