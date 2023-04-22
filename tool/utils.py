@@ -99,6 +99,7 @@ def nms_cpu(boxes, confs, nms_thresh=0.5, min_mode=False):
 def plot_boxes_cv2(img, boxes, savename=None, class_names=None, color=None):
     import cv2
     img = np.copy(img)
+    total_detections=[]
     colors = np.array([[1, 0, 1], [0, 0, 1], [0, 1, 1], [0, 1, 0], [1, 1, 0], [1, 0, 0]], dtype=np.float32)
 
     def get_color(c, x, max_val):
@@ -124,6 +125,8 @@ def plot_boxes_cv2(img, boxes, savename=None, class_names=None, color=None):
             rgb = (255, 0, 0)
         if len(box) >= 7 and class_names:
             cls_conf = box[5]
+            if cls_conf < 0.5:
+                continue    
             cls_id = box[6]
             # print('%s: %f' % (class_names[cls_id], cls_conf))
             classes = len(class_names)
@@ -133,6 +136,8 @@ def plot_boxes_cv2(img, boxes, savename=None, class_names=None, color=None):
             blue = get_color(0, offset, classes)
             if color is None:
                 rgb = (red, green, blue)
+            
+            print('cls_conf:', cls_conf)
             msg = str(class_names[cls_id])+" "+str(round(cls_conf,3))
             t_size = cv2.getTextSize(msg, 0, 0.7, thickness=bbox_thick // 2)[0]
             c1, c2 = (x1,y1), (x2, y2)
@@ -142,11 +147,12 @@ def plot_boxes_cv2(img, boxes, savename=None, class_names=None, color=None):
             cv2.rectangle(img, (x1,y1), (np.int32(c3[0]), np.int32(c3[1])), rgb, -1)
             img = cv2.putText(img, msg, (c1[0], np.int32(c1[1] - 2)), cv2.FONT_HERSHEY_SIMPLEX,0.7, (0,0,0), bbox_thick//2,lineType=cv2.LINE_AA)
         
+        total_detections.append({'msg': msg, 'bbox': [x1, y1, x2, y2]})
         img = cv2.rectangle(img, (x1, y1), (x2, y2), rgb, bbox_thick)
-    if savename:
-        # print("save plot results to %s" % savename)
-        cv2.imwrite(savename, img)
-    return img
+    # if savename:
+    #     # print("save plot results to %s" % savename)
+    #     cv2.imwrite(savename, img)
+    return img, total_detections
 
 
 def read_truths(lab_path):
