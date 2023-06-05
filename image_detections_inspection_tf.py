@@ -5,7 +5,7 @@ import cv2
 import copy
 import numpy as np
 from geometry_msgs.msg import Polygon, Point32
-from models import predict, get_model_init
+#from models import predict, get_model_init
 from sensor_msgs.msg import PointCloud2
 import message_filters
 from std_msgs.msg import Bool, Int32
@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import tf
 from transforms3d import quaternions
+from config_ICUAS import cfg
+from models2 import predict, get_model_init
 
 class image_node():
     def __init__(self):
@@ -20,18 +22,15 @@ class image_node():
 
         self.model, self.class_names=get_model_init()
         self.run_flag = False
-        self.camera_matrix, self.dist_coeffs, self.R, self.t = None, None, None, None
+        self.camera_matrix, self.dist_coeffs = None, None
         self.translation, self.rotation = None, None
         self.drone_pose = {'position': None, 'orientation': None}
         self.detections_pose = []
+        self.original_image = None
 
         # tf
         self.br = tf.TransformBroadcaster()
         self.listener = tf.TransformListener()
-
-        #plot 3D points
-        fig = plt.figure()
-        self.ax = fig.add_subplot(111, projection='3d')
 
         self.flag_run_sub = rospy.Subscriber("/flag/run", Bool, self.callback_flag_run)
         self.image_sub = rospy.Subscriber("/red/camera/color/image_raw", Image, self.image_callback)
@@ -46,15 +45,16 @@ class image_node():
         self.bbox_detections = rospy.Publisher("/bbox/detections", Polygon , queue_size=10)
 
         self.bridge = CvBridge()
+        print('INIT')
     
     def callback_flag_run(self, msg):
+        print(msg.data)
         self.run_flag = msg.data
     
     def pose_callback(self, msg):
-        position = msg.pose.position
-        orientation = msg.pose.orientation
-        self.drone_pose['position'] = position
-        self.drone_pose['orientation'] = orientation
+        if self.run_flag:
+            self.drone_pose['position'] = msg.pose.position
+            self.drone_pose['orientation'] = msg.pose.orientation
 
     def points_sort(self, points):
         points = np.array(points).reshape((4,2)).astype('float32')
@@ -69,6 +69,7 @@ class image_node():
     def image_callback(self, msg):
         if self.run_flag:
             cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            self.original_image = copy.deepcopy(cv_image)
             cv_image_gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
             results = self.detect_tiles(cv_image, cv_image_gray)
             time = msg.header.stamp
@@ -76,10 +77,15 @@ class image_node():
             for result in results:
                 x, y, alpha, image_cut = result
                 start_x, start_y = x-alpha, y-alpha
+
+                # Detect cracks with the image cut (tile)
                 total_detections = self.detect_cracks(image_cut)
                 
+                # If some crack is detected
                 if len(total_detections) > 0:
-                    quat = quaternions.mat2quat(self.R)
+
+                    # self.R, self.translation calculated in calculate_3D_points with solvePnP
+                    quat = quaternions.mat2quat(self.rotation)
                     self.br.sendTransform((self.translation[0][0], self.translation[1][0], self.translation[2][0]),
                             quat,
                             time,
@@ -88,47 +94,43 @@ class image_node():
 
                     try:
                         (trans,rot) = self.listener.lookupTransform('world', 'object', rospy.Time(0))
-                        print(trans)
+                        
                         exist=False
-                        alpha = 2 #Test ratio for distance between detections in meters
-                        times_detected= 3 #Number of times that the same detection is detected
                         for detection in self.detections_pose:
-                            if abs(detection['position'][0] - trans[0]) < alpha and abs(detection['position'][1] - trans[1]) < alpha and abs(detection['position'][2] - trans[2]) < alpha:
+                            if abs(detection['position'][0] - trans[0]) < cfg.radius and abs(detection['position'][1] - trans[1]) < cfg.radius and abs(detection['position'][2] - trans[2]) < cfg.radius:
                                 exist=True
                                 detection['detected'] += 1
 
                                 # Only if detected n times
-                                if detection['detected'] == times_detected:
-                                    print('DETECTED ', times_detected,' TIMES')
+                                if detection['detected'] == cfg.times_detected:
+                                    print('DETECTED ', cfg.times_detected,' TIMES')
+                                    
                                     self.run_flag = False
                                     for detection in total_detections:
                                         original_image = self.paint(detection, cv_image, start_x, start_y)
-
-                                        cv2.imshow("CRACK", original_image)
-
                                         self.detections_cracks.publish(self.bridge.cv2_to_imgmsg(original_image, "bgr8"))
                                         self.original_image_detections_cracks.publish(self.bridge.cv2_to_imgmsg(original_image, "bgr8"))
+                                        
+                                        if cfg.debug:
+                                            cv2.imshow("CRACK", original_image)
                                 break
                         
+                        # The position of the new detection is not inside the radius of any previous detection
                         if not exist:
                             self.detections_pose.append({'position':trans, 'detected': 1})
-                            print('new detection', self.detections_pose)
 
                     except Exception as e:
                         print(e)
                         continue
 
-
-            cv2.imshow("Image window", cv_image)
-            cv2.waitKey(3)
+            if cfg.debug:
+                cv2.imshow("Image window", cv_image)
+                cv2.waitKey(3)
 
     def camera_info_callback(self, msg):
         if self.run_flag:
             self.camera_matrix = np.array(msg.K).reshape((3, 3))
             self.dist_coeffs = np.array(msg.D)
-            self.R = np.array(msg.R).reshape((3, 3))
-            P = np.array(msg.P).reshape((3, 4))
-            self.t = P[:, 3]
 
     def calculate_iou(self, boxA, boxB):
         xA = max(boxA[0], boxB[0])
@@ -157,117 +159,91 @@ class image_node():
 
         return img
 
-    def detect_tiles(self, cv_image, cv_image_gray, alpha=10):
-        original_image = copy.deepcopy(cv_image)
+    def detect_tiles(self, cv_image, cv_image_gray):
         cv_blur = cv2.GaussianBlur(cv_image_gray, (5, 5), 0)
-        canny = cv2.Canny(cv_blur, 150, 180)
+        canny = cv2.Canny(cv_blur, 50, 80)
         kernel = np.ones((5,5),np.uint8)
         dilation = cv2.dilate(canny,kernel,iterations = 1)
 
         cnt, hierarchy = cv2.findContours(dilation, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(cv_image,cnt,-1,(0,0,255), 2)
 
-        currents_detections=[]
-        results=[]
+        currents_detections, results = [], []
         for c in cnt:
             approx = cv2.approxPolyDP(c, 0.01*cv2.arcLength(c, True), True)
+
             if len(approx) == 4:
                 x, y, w, h = cv2.boundingRect(c)
 
                 ratio = float(w)/h
                 
-                if ratio >= 0.9 and ratio <= 1.1:
+                if ratio >= cfg.ratio_tile[0] and ratio <= cfg.ratio_tile[1]:
                     x, y, w, h = cv2.boundingRect(c)
 
-                    #TODO: and w < 95 and h < 95
-                    if (w > 65 and h > 65):
+                    if w > cfg.size_tile[0] and h > cfg.size_tile[0] and w < cfg.size_tile[1] and h < cfg.size_tile[1]:
+                        
                         same=False
                         for c in currents_detections:
                             iou = self.calculate_iou(c, [x, y, x + w, y + h])
-                            if iou > 0.5:
+                            if iou > cfg.iou_tiles:
                                 same=True
                                 break
 
                         if not same:
-
-                            if x-alpha < 0 or y-alpha < 0 or x+w+alpha > cv_image.shape[1] or y+h+alpha > cv_image.shape[0]:
+                            
+                            # If tile with the margin is out of the image, continue
+                            if x-cfg.margin_tile < 0 or y-cfg.margin_tile < 0 or x+w+cfg.margin_tile > cv_image.shape[1] or y+h+cfg.margin_tile > cv_image.shape[0]:
                                 continue
 
                             currents_detections.append([x, y, x + w, y + h])
-                            cv2.rectangle(cv_image, (x, y), (x + w, y + h), (36,255,12), 2)
-                            # cv2.circle(cv_image, (x, y), 5, (0, 0, 255), -1)
-                            # cv2.circle(cv_image, (x + w, y), 5, (0, 0, 255), -1)
-                            # cv2.circle(cv_image, (x + w, y + h), 5, (0, 0, 255), -1)
-                            # cv2.circle(cv_image, (x, y + h), 5, (0, 0, 255), -1)
-                            pt_cnt = cv2.approxPolyDP(c, 0.01*cv2.arcLength(c, True), True)
-                            cv2.circle(cv_image, (pt_cnt[0][0][0], pt_cnt[0][0][1]), 5, (0, 0, 255), -1)
-                            cv2.circle(cv_image, (pt_cnt[1][0][0], pt_cnt[1][0][1]), 5, (0, 255,0), -1)
-                            cv2.circle(cv_image, (pt_cnt[2][0][0], pt_cnt[2][0][1]), 5, (255, 0, 255), -1)
-                            cv2.circle(cv_image, (pt_cnt[3][0][0], pt_cnt[3][0][1]), 5, (255, 0, 0), -1)
-
-                            self.image_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, "bgr8"))
-                            # cv2.imshow("Image window1", cv_image)
-                            # cv2.waitKey(3)
+                            
                             pol = Polygon()
                             pol.points.append(Point32(x, y, 0))
                             pol.points.append(Point32(x + w, y, 0))
                             pol.points.append(Point32(x + w, y + h, 0))
                             pol.points.append(Point32(x, y + h, 0))
+
+                            # Publish bbox detections and image
                             self.bbox_detections.publish(pol)
-
-                            #offset alpha
-                            image_cut = original_image[y-alpha:y+alpha+h,x-alpha:x+w+alpha]
-                            results.append([x, y, alpha, image_cut])
-
-                            x1, y1, x2, y2 = x-alpha, y-alpha, x+w+alpha, y+alpha+h
+                            self.image_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, "bgr8"))
+                            
+                            # CALCULATE 3D POINTS OF THE TILE WITH SOLVEPNP. Two ways: First with the bbox title and second with the specific corners of the tile
                             # bbox title with boundingRect
-                            self.translation, self.rotation = self.calculate_3D_points([[x1, y1],[x1, y2],[x2, y2],[x2, y1]])
+                            x1, y1, x2, y2 = x-cfg.margin_tile, y-cfg.margin_tile, x+w+cfg.margin_tile, y+cfg.margin_tile+h
+                            self.rotation, self.translation = self.calculate_3D_points([[x1, y1],[x1, y2],[x2, y2],[x2, y1]])
 
                             # countour points approxPolyDP
+                            pt_cnt = cv2.approxPolyDP(c, 0.01*cv2.arcLength(c, True), True)
                             points_sort = self.points_sort(pt_cnt)
-                            self.translation, self.rotation = self.calculate_3D_points([points_sort])
+                            self.rotation, self.translation = self.calculate_3D_points([points_sort])
+                            # -----------------------------------------------------
 
-                            # self.plot_3D_points(world_points)
-                            # # plt.show()
+                            # Return the top left corner of the tile, the margin and the image cut (the first are for draw the tile in the original image)
+                            image_cut = self.original_image[y-cfg.margin_tile:y+cfg.margin_tile+h,x-cfg.margin_tile:x+w+cfg.margin_tile]
+                            results.append([x, y, cfg.margin_tile, image_cut])
 
-                            # #save plt
-                            # plt.savefig('test.png')
-                            # a=0
+                            if cfg.debug:
+                                cv2.rectangle(cv_image, (x, y), (x + w, y + h), (36,255,12), 2)
+                                cv2.circle(cv_image, (pt_cnt[0][0][0], pt_cnt[0][0][1]), 5, (0, 0, 255), -1)
+                                cv2.circle(cv_image, (pt_cnt[1][0][0], pt_cnt[1][0][1]), 5, (0, 255,0), -1)
+                                cv2.circle(cv_image, (pt_cnt[2][0][0], pt_cnt[2][0][1]), 5, (255, 0, 255), -1)
+                                cv2.circle(cv_image, (pt_cnt[3][0][0], pt_cnt[3][0][1]), 5, (255, 0, 0), -1)
+
 
 
         return results
-    
-    def plot_3D_points(self, points):
-        self.ax.scatter(points[:,0], points[:,1], points[:,2], c='r', marker='o')
-        self.ax.set_xlabel('X Label')
-        self.ax.set_ylabel('Y Label')
-        self.ax.set_zlabel('Z Label')
       
-    def calculate_3D_points(self, imagePoints):
-        objectPoints = [[0,0,0], [0,1,0], [1,1,0], [1,0,0]]
-        objectPoints = np.array(objectPoints).reshape((4,3)).astype('float32')
-        imagePoints = np.array(imagePoints).reshape((4,2)).astype('float32')
+    def calculate_3D_points(self, image_points):
+        object_points = np.array(cfg.object_points).reshape((4,3)).astype('float32')
+        image_points = np.array(image_points).reshape((4,2)).astype('float32')
 
-        rtval, rvec, tvec = cv2.solvePnP(objectPoints, imagePoints, self.camera_matrix, self.dist_coeffs)
+        rtval, rvec, tvec = cv2.solvePnP(object_points, image_points, self.camera_matrix, self.dist_coeffs)
         R = cv2.Rodrigues(rvec)[0]
-
-        transfP2C = np.concatenate((R, tvec), axis=1)
-        transfP2C = np.concatenate((transfP2C, np.array([[0,0,0,1]])), axis=0)
-
-        camera_points = transfP2C @ objectPoints
-        
-        # print('self.R', self.R)
-        # print('self.t', self.t)
-        # transfC2W = np.concatenate((self.R, self.t.reshape((3,1))), axis=1)
-        # transfC2W = np.concatenate((transfC2W, np.array([[0,0,0,1]])), axis=0)
-
-        # world_points = transfC2W @ camera_points
 
         return R, tvec
 
     def detect_cracks(self, image_cut):
 
-        image_detect, total_detections = predict(self.model, self.class_names, image_cut, conf_thres=0.7)
+        image_detect, total_detections = predict(self.model, self.class_names, image_cut)
 
         return total_detections
 
