@@ -10,7 +10,6 @@ from geometry_msgs.msg import Polygon, Point32
 # from models import 
 from models import predict, get_model_init
 
-
 import rosbag
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -19,7 +18,7 @@ from cv_bridge import CvBridge
 
 class CrackDetector:
     def __init__(self, debug=False):
-        bag = rosbag.Bag('FBM1_flight3.bag', "r")
+        bag = rosbag.Bag('/home/david/Downloads/2023-06-07-12-58-08.bag', "r")
         self.model, self.class_names=get_model_init()
 
         bridge=CvBridge()
@@ -29,12 +28,33 @@ class CrackDetector:
             if 'image' in topic:
                 print(topic)
 
-        for topic, msg, t in bag.read_messages(topics=['/camera/color/image_raw/compressed']):
+        for topic, msg, t in bag.read_messages(topics=['/red/camera/color/image_raw/compressed']):
             cv_img = bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
             self.original_image = copy.deepcopy(cv_img)
             cv_image_gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-            self.canny(cv_img, cv_image_gray)
+            results=self.canny(cv_img, cv_image_gray)
+
+            for result in results:
+                x, y, alpha, image_cut = result
+                start_x, start_y = x-alpha, y-alpha
+
+                # Detect cracks with the image cut (tile)
+                cv2.imshow('image_cut', image_cut)
+                total_detections = self.detect_cracks(image_cut)
+
+                for detection in total_detections:
+                    original_image = self.paint(detection, cv_img, start_x, start_y)
+                    cv2.imshow('crack', original_image)
+
             cv2.imshow("Image window", cv_img)
+            cv2.imwrite('canny_prueba.png', cv_img)
+            cv2.waitKey(0)
+    
+    def detect_cracks(self, image_cut):
+
+        image_detect, total_detections = predict(self.model, self.class_names, image_cut)
+
+        return total_detections
 
     def calculate_iou(self, boxA, boxB):
         xA = max(boxA[0], boxB[0])
@@ -67,23 +87,61 @@ class CrackDetector:
         return img
 
     def canny(self, cv_image, cv_image_gray):
-        cv_blur = cv2.GaussianBlur(cv_image_gray, (5, 5), 0)
+        original_image = copy.deepcopy(cv_image)
+        _, img = cv2.threshold(cv_image_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU, cv_image_gray)
+        cv2.imwrite('canny.png', img)
+        redBajo1 = np.array([108, 0, 0], np.uint8)
+        redAlto1 = np.array([180, 255, 255], np.uint8)
+
+        redBajo1 = np.array([0, 42, 0])
+        redAlto1 = np.array([179, 255, 255])
+        
+        frameHSV = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+        cv2.imwrite('canny.png', frameHSV)
+        maskRed1 = cv2.inRange(frameHSV, redBajo1, redAlto1)
+        cv2.imwrite('canny.png', maskRed1)
+
+        cv_blur = cv2.GaussianBlur(maskRed1, (3, 3), 0)
+        cv2.imwrite('canny.png', cv_blur)
         # cv_blur = cv_image_gray
         # canny = cv2.Canny(cv_blur, 150, 180)
-        canny = cv2.Canny(cv_blur, 50, 80)
+        canny = cv2.Canny(cv_blur, 5, 150)
+        cv2.imwrite('canny.png', canny)
+
         kernel = np.ones((5,5),np.uint8)
         dilation = cv2.dilate(canny,kernel,iterations = 1)
+        cv2.imwrite('canny.png', dilation)
 
         cnt, hierarchy = cv2.findContours(dilation, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         # cv2.drawContours(cv_image,cnt,-1,(0,0,255), 2)
+        cv2.imshow('canny', canny)
         currents_detections=[]
+        resutls=[]
         for c in cnt:
-            approx = cv2.approxPolyDP(c, 0.01*cv2.arcLength(c, True), True)
+            x, y, w, h = cv2.boundingRect(c)
+            if x > 200 and w > 70 and h > 70:
+                cv_image=original_image[y-0:y+0+h,x-0:x+w+0]
+                resutls.append([x, y, 0, cv_image])
+                cv2.rectangle(cv_image, (x, y), (x + w, y + h), (36,255,12), 2)
+                # cv2.drawContours(cv_image,c,-1,(0,255,0), 2)
+                cv2.imwrite('canny.png', cv_image)
+                cv2.imshow('canny_tile', cv_image)
+                a=0
+            continue
+            print(x)
+            approx = cv2.approxPolyDP(c, 0.04*cv2.arcLength(c, True), True)
             if len(approx) == 4:
                 x, y, w, h = cv2.boundingRect(c)
                 ratio = float(w)/h
+                
                 if ratio >= 0.9 and ratio <= 1.1:
+                    # print(ratio)
+                    
                     if w > 50 and h > 50 and w < 260 and h < 260:
+                        cv2.drawContours(cv_image,c,-1,(0,255,0), 2)
+                        cv2.imwrite('canny.png', cv_image)
+                        a=0
+                        continue
                         for c in currents_detections:
                             iou = self.calculate_iou(c, [x, y, x + w, y + h])
                             print('iou', iou)
@@ -125,6 +183,7 @@ class CrackDetector:
                                 cv2.imshow("Image detect", image_detect)
                                 cv2.waitKey(0)
                                 print("Cracks detected")
+        return resutls
 
 
 if __name__ == '__main__':
