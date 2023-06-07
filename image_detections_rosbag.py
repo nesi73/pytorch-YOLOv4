@@ -27,8 +27,12 @@ class CrackDetector:
             break
             if 'image' in topic:
                 print(topic)
-
+        cont=0
         for topic, msg, t in bag.read_messages(topics=['/red/camera/color/image_raw/compressed']):
+            if cont < 500:
+                cont+=1
+                continue
+
             cv_img = bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
             self.original_image = copy.deepcopy(cv_img)
             cv_image_gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
@@ -88,8 +92,8 @@ class CrackDetector:
 
     def canny(self, cv_image, cv_image_gray):
         original_image = copy.deepcopy(cv_image)
+        original_paint=copy.deepcopy(cv_image)
         _, img = cv2.threshold(cv_image_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU, cv_image_gray)
-        cv2.imwrite('canny.png', img)
         redBajo1 = np.array([108, 0, 0], np.uint8)
         redAlto1 = np.array([180, 255, 255], np.uint8)
 
@@ -97,92 +101,50 @@ class CrackDetector:
         redAlto1 = np.array([179, 255, 255])
         
         frameHSV = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
-        cv2.imwrite('canny.png', frameHSV)
         maskRed1 = cv2.inRange(frameHSV, redBajo1, redAlto1)
-        cv2.imwrite('canny.png', maskRed1)
 
         cv_blur = cv2.GaussianBlur(maskRed1, (3, 3), 0)
-        cv2.imwrite('canny.png', cv_blur)
         # cv_blur = cv_image_gray
         # canny = cv2.Canny(cv_blur, 150, 180)
         canny = cv2.Canny(cv_blur, 5, 150)
-        cv2.imwrite('canny.png', canny)
 
         kernel = np.ones((5,5),np.uint8)
         dilation = cv2.dilate(canny,kernel,iterations = 1)
-        cv2.imwrite('canny.png', dilation)
 
         cnt, hierarchy = cv2.findContours(dilation, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         # cv2.drawContours(cv_image,cnt,-1,(0,0,255), 2)
-        cv2.imshow('canny', canny)
         currents_detections=[]
         resutls=[]
         for c in cnt:
             x, y, w, h = cv2.boundingRect(c)
-            if x > 200 and w > 70 and h > 70:
-                cv_image=original_image[y-0:y+0+h,x-0:x+w+0]
-                resutls.append([x, y, 0, cv_image])
-                cv2.rectangle(cv_image, (x, y), (x + w, y + h), (36,255,12), 2)
+            if x > 200 and w > 70 and h > 70 and abs(w-h) < 10:
                 # cv2.drawContours(cv_image,c,-1,(0,255,0), 2)
-                cv2.imwrite('canny.png', cv_image)
-                cv2.imshow('canny_tile', cv_image)
-                a=0
-            continue
-            print(x)
-            approx = cv2.approxPolyDP(c, 0.04*cv2.arcLength(c, True), True)
-            if len(approx) == 4:
-                x, y, w, h = cv2.boundingRect(c)
-                ratio = float(w)/h
                 
-                if ratio >= 0.9 and ratio <= 1.1:
-                    # print(ratio)
-                    
-                    if w > 50 and h > 50 and w < 260 and h < 260:
-                        cv2.drawContours(cv_image,c,-1,(0,255,0), 2)
-                        cv2.imwrite('canny.png', cv_image)
-                        a=0
+                same = False
+                for c in currents_detections:
+                    iou = self.calculate_iou(c, [x, y, x + w, y + h])
+                    print('iou', iou)
+                    if iou > 0.5:
+                        same = True
                         continue
-                        for c in currents_detections:
-                            iou = self.calculate_iou(c, [x, y, x + w, y + h])
-                            print('iou', iou)
-                            if iou > 0.5:
-                                continue
 
-                        if True:
-                            currents_detections.append([x, y, x + w, y + h])
-                            cv2.rectangle(cv_image, (x, y), (x + w, y + h), (36,255,12), 2)
-                            #self.image_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, "bgr8"))
-                            cv2.imshow("Image window", cv_image)
-                            cv2.waitKey(0)
-                            print("Tile detected")
-                            pol = Polygon()
-                            pol.points.append(Point32(x, y, 0))
-                            pol.points.append(Point32(x + w, y, 0))
-                            pol.points.append(Point32(x + w, y + h, 0))
-                            pol.points.append(Point32(x, y + h, 0))
-                            #self.bbox_detections.publish(pol)
+                if not same:
+                    currents_detections.append([x, y, x + w, y + h])
+                    cv2.rectangle(original_paint, (x, y), (x + w, y + h), (36,255,12), 2)
+                    #self.image_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, "bgr8"))
+                    cv2.waitKey(0)
+                    print("Tile detected")
+                    pol = Polygon()
+                    pol.points.append(Point32(x, y, 0))
+                    pol.points.append(Point32(x + w, y, 0))
+                    pol.points.append(Point32(x + w, y + h, 0))
+                    pol.points.append(Point32(x, y + h, 0))
+                    #self.bbox_detections.publish(pol)
+                    cv2.imshow('original_image', original_paint)
+                    print(x, y, w, h)
+                    cv_image=original_image[y-0:y+0+h,x-0:x+w+0]
+                    resutls.append([x, y, 0, cv_image])
 
-                            #offset alpha
-                            alpha = 10
-                            image_cut = self.original_image[y-alpha:y+alpha+h,x-alpha:x+w+alpha]
-                            if image_cut.shape[0] <= 10 or image_cut.shape[1] <= 10:
-                                continue
-                            ratio = float(image_cut.shape[1])/image_cut.shape[0]
-                            if ratio < 0.5:
-                                continue
-                            # print("Image cut size:", image_cut.shape)
-
-                            start_x, start_y = x-alpha, y-alpha
-                            image_detect, total_detections = predict(self.model, self.class_names, image_cut)
-
-                            for detection in total_detections:
-                                self.original_image = self.paint(detection, self.original_image, start_x, start_y)
-
-                            cv2.imshow("Image window", self.original_image)
-                            if total_detections:
-                                cv2.imshow("Image detect", image_detect)
-                                cv2.waitKey(0)
-                                print("Cracks detected")
         return resutls
 
 
