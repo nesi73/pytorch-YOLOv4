@@ -22,7 +22,7 @@ class CrackDetector():
 
     # Subscribers
     RUN_NODE_TOPIC = "/crack_detector/run"
-    COLOR_CAM_IMAGE_TOPIC = "/red/camera/color/image_raw"
+    COLOR_CAM_IMAGE_TOPIC = "/red/camera/color/image_raw/compressed"
     COLOR_CAM_INFO_TOPIC = "/red/camera/color/camera_info"
     # Publishers
     TILE_DETECTION_TOPIC = "/red/crack_detector/tiles/image"
@@ -94,7 +94,8 @@ class CrackDetector():
         if not self.run_flag:
             return
 
-        cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        # cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
         self.original_image = copy.deepcopy(cv_image)
         cv_image_gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
         tiles_detected = self.detect_tiles(cv_image, cv_image_gray)
@@ -209,7 +210,7 @@ class CrackDetector():
 
         return img
 
-    def detect_tiles(self, cv_image, cv_image_gray):
+    def detect_tiles3(self, cv_image, cv_image_gray):
 
         original_image = copy.deepcopy(cv_image)
         _, img = cv2.threshold(cv_image_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU, cv_image_gray)
@@ -274,7 +275,7 @@ class CrackDetector():
                     resutls.append([x, y, 0, cv_image, translation, rotation])
 
         return resutls
-        
+
     def detect_tiles2(self, cv_image, cv_image_gray):
         """Detect tile in image
 
@@ -377,6 +378,91 @@ class CrackDetector():
 
         return results
 
+    def detect_tiles(self, cv_image, cv_image_gray):
+
+        redBajo1 = np.array([0, 0, 50])
+        redAlto1 = np.array([50, 60, 255])
+
+        fondoBajo1 = np.array([50, 30, 0])
+        fondoAlto1 = np.array([255, 100, 255])
+        
+        frameHSV = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+        cv2.imwrite('canny.png', frameHSV)
+        maskRed1 = cv2.inRange(frameHSV, redBajo1, redAlto1)
+        cv2.imwrite('canny.png', maskRed1)
+
+        fondoRed1 = cv2.inRange(frameHSV, fondoBajo1, fondoAlto1)
+
+        kernel = np.ones((3,3),np.uint8)
+        dilate = cv2.dilate(fondoRed1,kernel,iterations = 1)
+        
+        #change uint16 to uint8
+        cv_blur = cv2.GaussianBlur(dilate, (7, 7), 9)
+        mediana = cv2.medianBlur(cv_blur, 5)
+        
+        canny = cv2.Canny(mediana, 5, 150)
+        dilate_canny = cv2.dilate(canny,kernel,iterations = 1)
+
+        cnt, hierarchy = cv2.findContours(dilate_canny, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+        currents_detections=[]
+        resutls=[]
+        for c in cnt:
+            x, y, w, h = cv2.boundingRect(c)
+            if w < 50:
+                continue
+            if w > 50 and h > 50 and w < 260 and h < 260:
+
+                cv2.imwrite('canny.png', cv_image)
+                alpha = 15
+                if x- alpha > 0 and y - alpha > 0 and x + alpha + w < cv_image.shape[1] and y + alpha + h < cv_image.shape[0]:
+                    cut_image_erode = dilate[y - alpha:y + alpha + h, x - alpha:x + alpha + w]
+                else:
+                    continue
+                #porcentaje de blancos
+                num_ones = np.sum(cut_image_erode == 255)
+
+                if num_ones/(cut_image_erode.shape[0]*cut_image_erode.shape[1]) < 0.23 or num_ones/(cut_image_erode.shape[0]*cut_image_erode.shape[1]) > 0.90:
+                    continue
+                
+                if cut_image_erode.shape[0] < 2 or cut_image_erode.shape[1] < 2:
+                    continue
+                cut_image_erode = cv2.cvtColor(cut_image_erode, cv2.COLOR_GRAY2BGR)
+                gaussian = cv2.GaussianBlur(cut_image_erode, (5, 5), 0)
+                canny_cut_image_erode = cv2.Canny(gaussian, 125, 150)
+                dilate_ = cv2.dilate(canny_cut_image_erode,kernel,iterations = 1)
+                cnt_erode,_= cv2.findContours(canny_cut_image_erode, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+                cont_cnts=0
+                currents_detections=[]
+                for c_erode in cnt_erode:
+                    x_, y_, w_, h_ = cv2.boundingRect(c_erode)
+                    if w_ < 7 or h_ < 7:
+                        continue
+                    same = False
+                    for d in currents_detections:
+                        iou = self.calculate_iou(d, [x_, y_, x_+w_, y_+h_])
+                        if iou > 0.8:
+                            same=True
+                            break
+                    if same:
+                        continue
+                    currents_detections.append([x_,y_,x_+w_, y_+h_])
+                    cont_cnts+=1
+
+                if cont_cnts == 1:
+                    if x_ < 5 or y_ < 5 or x_ + w_ > cut_image_erode.shape[1] - 5 or y_ + h_ > cut_image_erode.shape[0] - 5:
+                        continue 
+                    cv_image_final_cut=cv_image[y:y+h, x:x+w]
+                    cv2.rectangle(cv_image, (x, y), (x + w, y + h), (0,255,0), 2)
+                    
+                    points_sorted=self.points_sort([[x,y],[x+w,y],[x+w,y+h],[x,y+h]])
+                    rotation, translation = self.calculate_3D_points(
+                        points_sorted)
+                    resutls.append([x, y, 0, cv_image_final_cut, translation, rotation]) 
+
+        return resutls
+    
     def calculate_3D_points(self, image_points):
         """Calculate PnP"""
         object_points = np.array(cfg.object_points).reshape(
