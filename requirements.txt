@@ -1,4 +1,4 @@
-torch==1.4.0
+torch==2.2.0
 tensorboardX==2.0
 scikit-image==0.16.2
 matplotlib==2.2.3
